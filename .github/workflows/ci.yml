@@ -39,4 +39,4 @@ jobs:
         with:
           context: ./CloudShop
           push: true
-          tags: ghcr.io/${{ github.repository_owner }}/my-cloud-shop:latest
+          tags: ghcr.io/zifmoi/my-cloud-shop:latest
