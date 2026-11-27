@@ -2,47 +2,140 @@
 <html lang="ru">
 <head>
     <meta charset="UTF-8">
-    <title>Облачный Магазин (ASP.NET 10 + Docker)</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Магазин в реальном времени (SignalR)</title>
+    <!-- Подключаем официальную клиентскую библиотеку Microsoft SignalR -->
+    <script src="https://unpkg.com/@microsoft/signalr@10.0.0/dist/browser/signalr.min.js"></script>
     <style>
-        body { font-family: sans-serif; max-width: 600px; margin: 40px auto; background: #f4f6f9; }
-        .card { background: white; padding: 20px; border-radius: 10px; box-shadow: 0 2px 8px rgba(0,0,0,0.1); }
+        body { font-family: sans-serif; max-width: 650px; margin: 30px auto; padding: 0 12px; background: #f4f6f9; }
+        .card { background: white; padding: 20px; border-radius: 10px; box-shadow: 0 2px 8px rgba(0,0,0,0.1); margin-bottom: 20px; }
+        .status { display: inline-block; padding: 4px 10px; border-radius: 20px; font-size: 12px; font-weight: bold; background: #fee2e2; color: #991b1b; }
+        .status.online { background: #dcfce7; color: #166534; }
         input, button { padding: 10px; margin: 5px 0; width: 100%; box-sizing: border-box; }
         button { background: #2563eb; color: white; border: none; border-radius: 5px; cursor: pointer; font-weight: bold; }
-        li { padding: 8px; border-bottom: 1px solid #eee; display: flex; justify-content: space-between; }
+        button.green { background: #16a34a; }
+        li { padding: 10px; border-bottom: 1px solid #eee; display: flex; justify-content: space-between; animation: highlight 1.5s ease; }
+        @keyframes highlight { from { background-color: #fef08a; } to { background-color: transparent; } }
+        #notifications { max-height: 120px; overflow-y: auto; font-size: 14px; color: #374151; }
     </style>
 </head>
 <body>
+    <!-- Блок 1: Каталог товаров с мгновенной синхронизацией -->
     <div class="card">
-        <h1>🚀 Мой облачный магазин</h1>
-        <input id="name" placeholder="Название товара (например, Смартфон)" />
+        <div style="display:flex; justify-content:space-between; align-items:center;">
+            <h1>⚡ Живой каталог</h1>
+            <span id="connStatus" class="status">Подключение...</span>
+        </div>
+        <input id="name" placeholder="Название товара (например, Монитор)" />
         <input id="price" type="number" placeholder="Цена в рублях" />
-        <button onclick="addProduct()">Добавить в каталог</button>
+        <button onclick="addProduct()">Добавить товар (увидят все сразу)</button>
         <ul id="list"></ul>
     </div>
 
+    <!-- Блок 2: Живая лента объявлений через Hub -->
+    <div class="card">
+        <h3>📢 Быстрое объявление всем покупателям</h3>
+        <input id="msgText" placeholder="Напишите сообщение (например: Скидка 20% на всё!)" />
+        <button class="green" onclick="sendNotice()">Отправить в эфир</button>
+        <div id="notifications" style="margin-top: 10px;"></div>
+    </div>
+
     <script>
-        // Загружаем список товаров с бэкенда при открытии страницы
+        // 1. Настраиваем подключение к нашему серверному хабу по адресу /shophub
+        const connection = new signalR.HubConnectionBuilder()
+            .withUrl("/shophub", signalR.HttpTransportType.WebSockets)
+            .withAutomaticReconnect() // Автоматически переподключаться при обрыве сети
+            .build();
+
+        // И при загрузке каталога, и при получении события добавляем товар по его ID.
+        function showProduct(product, isNew = false) {
+            const id = `product-${product.id}`;
+            if (document.getElementById(id)) return;
+
+            const row = document.createElement('li');
+            row.id = id;
+            const name = document.createElement('span');
+            name.textContent = isNew ? `🆕 ${product.name}` : product.name;
+            const price = document.createElement('b');
+            price.textContent = `${product.price} ₽`;
+            row.append(name, price);
+
+            const list = document.getElementById('list');
+            if (isNew) list.prepend(row);
+            else list.append(row);
+        }
+
+        connection.on("ProductAdded", product => showProduct(product, true));
+
+        // 3. Подписываемся на событие "ReceiveMessage" для живой ленты объявлений
+        connection.on("ReceiveMessage", (user, message) => {
+            const box = document.getElementById('notifications');
+            const time = new Date().toLocaleTimeString();
+            const notice = document.createElement('p');
+            const author = document.createElement('b');
+            author.textContent = `[${time}] ${user}:`;
+            notice.append(author, ` ${message}`);
+            box.prepend(notice);
+        });
+
+        const badge = document.getElementById('connStatus');
+
+        function setStatus(text, online = false) {
+            badge.textContent = text;
+            badge.classList.toggle('online', online);
+        }
+
+        connection.onreconnecting(() => setStatus('Переподключение…'));
+        connection.onreconnected(() => {
+            setStatus('🟢 WebSocket Online', true);
+            loadProducts().catch(console.error);
+        });
+        connection.onclose(() => setStatus('Нет подключения'));
+
+        // Запускаем WebSocket-соединение.
+        connection.start().then(() => {
+            setStatus('🟢 WebSocket Online', true);
+            return loadProducts();
+        }).catch(err => {
+            if (connection.state !== signalR.HubConnectionState.Connected) {
+                setStatus('Ошибка подключения');
+                loadProducts().catch(console.error);
+            }
+            console.error('Ошибка запуска каталога:', err);
+        });
+
+        // Первичная загрузка товаров при открытии страницы
         async function loadProducts() {
             const res = await fetch('/api/products');
+            if (!res.ok) throw new Error(`Каталог не загрузился: HTTP ${res.status}`);
             const items = await res.json();
-            document.getElementById('list').innerHTML = items
-                .map(p => `<li><span>${p.name}</span><b>${p.price} ₽</b></li>`).join('');
+            items.reverse().forEach(product => showProduct(product));
         }
-        // Отправляем новый товар POST-запросом на сервер
+
+        // Отправка нового товара (обратите внимание: мы больше не вызываем loadProducts() вручную —
+        // товар добавится на экран сам, когда сервер пришлёт сигнал "ProductAdded"!)
         async function addProduct() {
-            const name = document.getElementById('name').value;
+            const name = document.getElementById('name').value.trim();
             const price = Number(document.getElementById('price').value);
-            if (!name) return;
-            await fetch('/api/products', {
+            if (!name || !Number.isFinite(price) || price <= 0) return;
+            const res = await fetch('/api/products', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ name, price })
             });
+            if (!res.ok) throw new Error(`Товар не добавлен: HTTP ${res.status}`);
+            if (connection.state !== signalR.HubConnectionState.Connected) await loadProducts();
             document.getElementById('name').value = '';
             document.getElementById('price').value = '';
-            loadProducts();
         }
-        loadProducts();
+
+        // Вызов метода SendAnnouncement напрямую на сервере (в классе ShopHub.cs)
+        async function sendNotice() {
+            const text = document.getElementById('msgText').value.trim();
+            if (!text || connection.state !== signalR.HubConnectionState.Connected) return;
+            await connection.invoke("SendAnnouncement", "Администратор", text);
+            document.getElementById('msgText').value = '';
+        }
     </script>
 </body>
 </html>

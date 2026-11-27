@@ -1,14 +1,17 @@
 using Microsoft.EntityFrameworkCore;
+using Microsoft.AspNetCore.SignalR; // Подключаем пространство имён SignalR
 using CloudShop.Data;
 using CloudShop.Models;
+using CloudShop.Hubs;              // Подключаем наш созданный хаб
 
 var builder = WebApplication.CreateBuilder(args);
 
-// Считываем строку подключения к БД из переменных окружения контейнера
+// 1. Регистрируем службу SignalR в контейнере зависимостей
+builder.Services.AddSignalR();
+
+// Считываем строку подключения к PostgreSQL
 var connString = builder.Configuration.GetConnectionString("DefaultConnection");
 
-// Гибридная архитектура:
-// 1. Если приложение запущено в связке Docker Compose — подключаем реальную БД PostgreSQL
 if (!string.IsNullOrEmpty(connString))
 {
     builder.Services.AddDbContext<AppDbContext>(options =>
@@ -16,17 +19,14 @@ if (!string.IsNullOrEmpty(connString))
 }
 else
 {
-    // 2. Если контейнер запущен автономно без внешней БД — используем временный список в оперативной памяти
     builder.Services.AddSingleton<List<Product>>(new List<Product>
     {
-        new Product { Id = 1, Name = "Игровой ноутбук (демо)", Price = 85000 },
-        new Product { Id = 2, Name = "Беспроводная мышь (демо)", Price = 2500 }
+        new Product { Id = 1, Name = "Игровой ноутбук (демо)", Price = 85000 }
     });
 }
 
 var app = builder.Build();
 
-// При запуске с PostgreSQL автоматически создаём базу и таблицу Products, если их ещё нет
 if (!string.IsNullOrEmpty(connString))
 {
     using var scope = app.Services.CreateScope();
@@ -34,11 +34,13 @@ if (!string.IsNullOrEmpty(connString))
     db.Database.EnsureCreated();
 }
 
-// Включаем раздачу статических файлов (нашего index.html из папки wwwroot)
 app.UseDefaultFiles();
 app.UseStaticFiles();
 
-// REST API (GET): Возвращает список всех товаров в формате JSON
+// 2. Открываем точку подключения WebSockets по адресу /shophub
+app.MapHub<ShopHub>("/shophub");
+
+// REST API (GET): Получить список всех товаров
 app.MapGet("/api/products", async (IServiceProvider sp) =>
 {
     var db = sp.GetService<AppDbContext>();
@@ -46,19 +48,26 @@ app.MapGet("/api/products", async (IServiceProvider sp) =>
     return Results.Ok(sp.GetRequiredService<List<Product>>());
 });
 
-// REST API (POST): Принимает новый товар от фронтенда и сохраняет его
-app.MapPost("/api/products", async (Product product, IServiceProvider sp) =>
+// REST API (POST): Добавить товар и МГНОВЕННО разослать его всем клиентам через SignalR
+app.MapPost("/api/products", async (Product product, IServiceProvider sp, IHubContext<ShopHub> hub) =>
 {
     var db = sp.GetService<AppDbContext>();
     if (db != null)
     {
         db.Products.Add(product);
         await db.SaveChangesAsync();
-        return Results.Ok(product);
     }
-    var list = sp.GetRequiredService<List<Product>>();
-    product.Id = list.Count + 1;
-    list.Add(product);
+    else
+    {
+        var list = sp.GetRequiredService<List<Product>>();
+        product.Id = list.Count + 1;
+        list.Add(product);
+    }
+
+    // 3. Уведомляем клиентов после сохранения товара.
+    // Сервер сам отправляет объект нового товара всем открытым вкладкам браузера!
+    await hub.Clients.All.SendAsync("ProductAdded", product);
+
     return Results.Ok(product);
 });
 
