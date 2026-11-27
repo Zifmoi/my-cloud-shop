@@ -1,0 +1,42 @@
+name: CI-CD Build and Push
+
+# Условие запуска: робот срабатывает при каждом git push в ветку main
+on:
+  push:
+    branches: [ "main" ]
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest # Выделяем чистую виртуальную машину Ubuntu на серверах GitHub
+    permissions:
+      contents: read       # Право на чтение исходного кода
+      packages: write      # Право на загрузку собранного Docker-образа в реестр GHCR
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4 # Скачиваем код репозитория на сборочный сервер
+
+      - name: Setup .NET 10
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x' # Устанавливаем компилятор .NET 10
+
+      - name: Build .NET project
+        # Шаг CI: Проверяем, что C#-код компилируется без синтаксических ошибок
+        run: dotnet build ./CloudShop/CloudShop.csproj --configuration Release
+
+      - name: Login to GitHub Container Registry
+        # Авторизуемся в реестре ghcr.io с помощью временного системного токена
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push Docker image
+        # Шаг CD: Собираем контейнер из Dockerfile и публикуем его в облачный реестр
+        uses: docker/build-push-action@v5
+        with:
+          context: ./CloudShop
+          push: true
+          tags: ghcr.io/${{ github.repository_owner }}/my-cloud-shop:latest

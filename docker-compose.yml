@@ -1,0 +1,28 @@
+services:
+  # Сервис №1: Наш веб-сайт на ASP.NET Core 10
+  web:
+    build: ./CloudShop             # Собирать образ из Dockerfile в папке CloudShop
+    restart: unless-stopped        # Автоперезапуск, если сайт стартовал на секунду раньше базы данных
+    ports:
+      - "8080:80"                  # Проброс портов: внешний порт 8080 -> внутренний порт 80 контейнера
+    environment:
+      # Передаём строку подключения к БД (Host=db ссылается на имя второго сервиса ниже)
+      - ConnectionStrings__DefaultConnection=Host=db;Database=shopdb;Username=postgres;Password=postgres
+    depends_on:
+      - db                         # Запускать сайт только после старта контейнера базы данных
+
+  # Сервис №2: База данных PostgreSQL
+  db:
+    image: postgres:15-alpine      # Берём готовый лёгкий образ PostgreSQL 15 с Docker Hub
+    restart: unless-stopped
+    environment:
+      - POSTGRES_DB=shopdb         # Имя создаваемой базы данных
+      - POSTGRES_USER=postgres     # Имя пользователя
+      - POSTGRES_PASSWORD=postgres # Пароль
+    volumes:
+      # Подключаем постоянный том, чтобы товары не пропадали при удалении или перезапуске контейнеров
+      - postgres_data:/var/lib/postgresql/data
+
+# Объявление постоянного виртуального диска для хранения данных БД
+volumes:
+  postgres_data:
